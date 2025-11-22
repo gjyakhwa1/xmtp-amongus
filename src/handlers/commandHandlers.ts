@@ -300,6 +300,11 @@ export function setupKillHandler(agent: Agent, gameManager: GameManager) {
               return;
             }
 
+            // Clear the kill phase timer since we're advancing early
+            const { clearPhaseTimer } = await import("../utils/timers.js");
+            const currentRound = gameManager.getGame().round;
+            clearPhaseTimer(`killPhase-${currentRound}`, gameManager);
+
             // Advance to discussion phase after a short delay
             setTimeout(async () => {
               await gameManager.advancePhase();

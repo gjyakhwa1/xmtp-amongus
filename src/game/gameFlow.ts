@@ -4,9 +4,11 @@ import {
   ContentTypeActions,
   type ActionsContent,
 } from "../xmtp-inline-actions/types/index.js";
-import { setPhaseTimer } from "../utils/timers.js";
+import { setPhaseTimer, clearPhaseTimer } from "../utils/timers.js";
+import { GameState } from "../types.js";
 import {
   TASK_PHASE_DURATION_MS,
+  KILL_PHASE_DURATION_MS,
   DISCUSSION_PHASE_DURATION_MS,
   VOTING_PHASE_DURATION_MS,
   MAX_ROUNDS,
@@ -15,6 +17,7 @@ import {
   KILL_COOLDOWN_SECONDS,
   CANCEL_GAME_WINDOW_MS,
   DISCUSSION_PHASE_DURATION_SECONDS,
+  KILL_PHASE_DURATION_SECONDS,
 } from "../config/gameConfig.js";
 import { getPlayerAddress, formatAddressForMention } from "../utils/playerAddress.js";
 
@@ -152,6 +155,20 @@ export async function startKillPhase(
   const impostor = gameManager.getPlayer(impostorInboxId);
   if (!impostor || !impostor.isAlive) return;
 
+  const lobbyId = gameManager.getGame().lobbyGroupId;
+  const group = lobbyId
+    ? await agent.client.conversations.getConversationById(lobbyId)
+    : null;
+
+  // Announce kill phase to group
+  if (group) {
+    await group.send(
+      `🔪 Round ${round} — Kill Phase\n\n` +
+        `Kill phase duration: ${KILL_PHASE_DURATION_SECONDS} seconds.\n` +
+        `The phase will automatically advance after the time limit.`
+    );
+  }
+
   try {
     const dm = await agent.client.conversations.newDm(impostorInboxId);
     const aliveUsernames = gameManager
@@ -164,12 +181,28 @@ export async function startKillPhase(
         `kill <address> or kill <username>\n\n` +
         `Success chance: ${(KILL_SUCCESS_CHANCE * 100).toFixed(0)}%\n` +
         `Max attempts: ${MAX_KILL_ATTEMPTS}\n` +
-        `Cooldown: ${KILL_COOLDOWN_SECONDS} seconds per attempt\n\n` +
+        `Cooldown: ${KILL_COOLDOWN_SECONDS} seconds per attempt\n` +
+        `Phase duration: ${KILL_PHASE_DURATION_SECONDS} seconds\n\n` +
         `Alive players: ${aliveUsernames.join(", ")}`
     );
   } catch (error) {
     console.error("Failed to send kill phase DM:", error);
   }
+
+  // Set timer to automatically advance to discussion phase after kill phase duration
+  setPhaseTimer(`killPhase-${round}`, KILL_PHASE_DURATION_MS, async () => {
+    // Only advance if we're still in kill phase (not already advanced by successful kill)
+    const currentState = gameManager.getState();
+    const isKillPhase =
+      currentState === GameState.ROUND_1_KILL ||
+      currentState === GameState.ROUND_2_KILL ||
+      currentState === GameState.ROUND_3_KILL;
+
+    if (isKillPhase) {
+      await gameManager.advancePhase();
+      await startDiscussionPhase(round, agent, gameManager);
+    }
+  }, gameManager);
 }
 
 export async function startDiscussionPhase(

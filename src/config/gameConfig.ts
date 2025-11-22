@@ -15,6 +15,7 @@ export const MAX_KILL_ATTEMPTS = 3; // Maximum kill attempts per round
 
 // Phase Duration Configuration (in milliseconds)
 export const TASK_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
+export const KILL_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
 export const DISCUSSION_PHASE_DURATION_MS = 45 * 1000; // 45 seconds
 export const VOTING_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
 
@@ -25,6 +26,7 @@ export const CANCEL_GAME_WINDOW_MS = 10 * 1000; // 10 seconds
 // Helper functions to convert to seconds for display
 export const KILL_COOLDOWN_SECONDS = KILL_COOLDOWN_MS / 1000;
 export const TASK_PHASE_DURATION_SECONDS = TASK_PHASE_DURATION_MS / 1000;
+export const KILL_PHASE_DURATION_SECONDS = KILL_PHASE_DURATION_MS / 1000;
 export const DISCUSSION_PHASE_DURATION_SECONDS = DISCUSSION_PHASE_DURATION_MS / 1000;
 export const VOTING_PHASE_DURATION_SECONDS = VOTING_PHASE_DURATION_MS / 1000;
 export const JOIN_WINDOW_DURATION_SECONDS = JOIN_WINDOW_DURATION_MS / 1000;
