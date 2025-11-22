@@ -11,10 +11,11 @@ This is a fully functional Mafia game bot that operates as an XMTP agent. The ga
 - **Multi-player Support**: Up to 6 players per game (configurable)
 - **Role-based Gameplay**: Random assignment of Mafia and Town roles
 - **Interactive Inline Actions**: Join buttons using XMTP inline actions (XIP-67)
-- **Phased Gameplay**: Task phase, Kill phase, Discussion phase, and Voting phase
-- **Private Messaging**: Mafia receives kill instructions via DMs
+- **Time-based Phased Gameplay**: All phases advance automatically after their duration
+- **Group Task Distribution**: Tasks sent in group chat with player mentions (one by one)
+- **Private Kill Commands**: Mafia receives kill instructions via DMs (no agent mention needed)
 - **Configurable Parameters**: All game settings in one config file
-- **Timer Management**: Automatic phase transitions with configurable durations
+- **Automatic Round Progression**: Game continues to next round even if tasks aren't completed
 
 ## 🏗️ Architecture
 
@@ -38,6 +39,7 @@ src/
 │   ├── helpers.ts            # Utility functions
 │   ├── lobby.ts              # Lobby-related helpers
 │   ├── messages.ts           # Message sending utilities
+│   ├── playerAddress.ts      # Player address resolution utilities
 │   └── timers.ts             # Timer management
 ├── gameManager.ts            # Game state management
 ├── types.ts                  # Type definitions
@@ -65,29 +67,35 @@ src/
 Each round consists of 4 phases:
 
 #### Phase 1: Task Phase (60 seconds)
-- Town members receive tasks via DM
+- **All players** (including Mafia) receive tasks in the group chat with their address mentioned
+- Tasks are sent one by one to avoid spam
 - Tasks include: PIN codes, word puzzles, math problems, unscrambling, counting
-- Players complete tasks using `@mafia /task <answer>`
-- Mafia can fake tasks but they don't count
+- Players complete tasks using `@mafia /task <answer>` in the group chat
+- Mafia receives tasks but cannot complete them (validation always fails)
+- **Phase advances automatically** after 60 seconds, even if tasks aren't completed
 
-#### Phase 2: Kill Phase
+#### Phase 2: Kill Phase (60 seconds)
 - Mafia receives kill instructions via DM
-- Mafia can attempt kills using `@mafia kill <username>` (DM only)
+- Mafia can attempt kills using `kill <address>` or `kill <username>` (DM only, no agent mention needed)
+- Kill command accepts both Ethereum addresses (0x...) and usernames
 - Kill success chance: 50% (configurable)
 - Cooldown: 15 seconds between attempts (configurable)
 - Max attempts: 3 per round (configurable)
-- Successful kills eliminate players immediately
+- Successful kills eliminate players immediately and advance phase early
+- **Phase advances automatically** after 60 seconds if no successful kill occurs
 
 #### Phase 3: Discussion Phase (45 seconds)
 - All players can discuss freely in the lobby group
 - Players share information and suspicions
-- Timer automatically advances to voting
+- **Phase advances automatically** to voting after 45 seconds
 
 #### Phase 4: Voting Phase (60 seconds)
 - Players vote to eliminate suspects using `@mafia vote <username>`
 - Majority vote eliminates a player
 - Eliminated player's role is revealed
 - Game checks win conditions
+- **Phase processes automatically** after 60 seconds
+- **Game advances to next round** automatically if more rounds remain, regardless of task completion
 
 ### 4. Win Conditions
 - **Town Wins**: Mafia is eliminated
@@ -95,15 +103,22 @@ Each round consists of 4 phases:
 
 ## 🎮 Commands
 
-All commands must mention the agent (`@mafia`) in group chats:
+**Group Commands** (require `@mafia` mention):
+- `/start` - Create a new game lobby (group only)
+- `/join` - Join the game lobby (lobby group only)
+- `/task <answer>` - Complete your assigned task (group only)
+- `vote <username>` - Vote to eliminate a player
 
-| Command | Usage | Description |
-|---------|-------|-------------|
-| `/start` | `@mafia /start` | Create a new game lobby (group only) |
-| `/join` | `@mafia /join` | Join the game lobby (lobby group only) |
-| `/task <answer>` | `@mafia /task 1234` | Complete your assigned task |
-| `kill <username>` | `@mafia kill alice` | Attempt to kill a player (DM only, Mafia only) |
-| `vote <username>` | `@mafia vote bob` | Vote to eliminate a player |
+**DM Commands** (no agent mention needed):
+- `kill <address>` or `kill <username>` - Attempt to kill a player (DM only, Mafia only)
+
+| Command | Usage | Description | Location |
+|---------|-------|-------------|----------|
+| `/start` | `@mafia /start` | Create a new game lobby | Group only |
+| `/join` | `@mafia /join` | Join the game lobby | Lobby group only |
+| `/task <answer>` | `@mafia /task 1234` | Complete your assigned task | Group only |
+| `kill <target>` | `kill 0x1234...` or `kill alice` | Attempt to kill a player | DM only, Mafia only, no mention needed |
+| `vote <username>` | `@mafia vote bob` | Vote to eliminate a player | Group only |
 
 ## ⚙️ Configuration
 
@@ -122,6 +137,7 @@ export const MAX_KILL_ATTEMPTS = 3;
 
 // Phase Duration Configuration
 export const TASK_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
+export const KILL_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
 export const DISCUSSION_PHASE_DURATION_MS = 45 * 1000; // 45 seconds
 export const VOTING_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
 
@@ -212,21 +228,34 @@ DB_ENCRYPTION_KEY=your_encryption_key_here
 
 ### Task System
 - Multiple task types: PIN, WORD, MATH, UNSCRAMBLE, COUNT
-- Tasks are validated server-side
-- Mafia can fake tasks but they don't count toward completion
+- Tasks are sent in the group chat with player address mentions (one by one)
+- All players (including Mafia) receive tasks in the group
+- Tasks are validated server-side with trimmed answers
+- Mafia receives tasks but cannot complete them (validation always fails)
+- **Time-based**: Phase advances automatically after duration, even if tasks aren't completed
 
 ### Kill System
-- Mafia can attempt kills during kill phase
+- Mafia can attempt kills during kill phase (DM only)
+- No agent mention required in DM: just type `kill <address>` or `kill <username>`
+- Accepts both Ethereum addresses (0x...) and usernames
 - 50% success chance (configurable)
 - 15-second cooldown between attempts
 - Maximum 3 attempts per round
-- Successful kills eliminate players immediately
+- Successful kills eliminate players immediately and advance phase early
+- **Time-based**: Phase advances automatically after duration if no successful kill
 
 ### Voting System
 - Majority vote required to eliminate
 - Ties result in no elimination
 - Eliminated player's role is revealed
 - Win conditions checked after each elimination
+- **Time-based**: Voting processes automatically after duration
+
+### Time-based Progression
+- **All phases are time-based** and advance automatically
+- Game continues to next round automatically if more rounds remain
+- Task completion is not required for round progression
+- Phases cannot be skipped or extended by players
 
 ## 📚 Dependencies
 
