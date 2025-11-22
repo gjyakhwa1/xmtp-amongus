@@ -10,6 +10,16 @@ import {
   type VoteResult,
 } from "./types.js";
 import { generateTask, validateTaskAnswer } from "./tasks.js";
+import {
+  MAX_PLAYERS,
+  MAX_ROUNDS,
+  MIN_PLAYERS_TO_START,
+  KILL_COOLDOWN_MS,
+  KILL_SUCCESS_CHANCE,
+  MAX_KILL_ATTEMPTS,
+  JOIN_WINDOW_DURATION_MS,
+  KILL_COOLDOWN_SECONDS,
+} from "./config/gameConfig.js";
 
 export class GameManager {
   private game: Game;
@@ -28,9 +38,9 @@ export class GameManager {
       currentPhaseDeadline: null,
       impostorInboxId: null,
       eliminatedPlayers: new Set(),
-      killCooldown: 15 * 1000, // 15 seconds in milliseconds
-      killSuccessChance: 0.5,
-      maxKillAttempts: 3,
+      killCooldown: KILL_COOLDOWN_MS,
+      killSuccessChance: KILL_SUCCESS_CHANCE,
+      maxKillAttempts: MAX_KILL_ATTEMPTS,
       taskAssignments: new Map(),
     };
   }
@@ -62,7 +72,7 @@ export class GameManager {
     // Create unique group name with timestamp to ensure uniqueness
     const timestamp = Date.now();
     const uniqueId = timestamp.toString().slice(-6); // Last 6 digits of timestamp
-    const groupName = `🟥 IMPOST0R LOBBY #${uniqueId}`;
+    const groupName = `🟥 MAFIA LOBBY #${uniqueId}`;
 
     // Create group with just the agent initially (agent must be in group)
     const group = await this.agent.client.conversations.newGroup([agentInboxId], {
@@ -74,7 +84,7 @@ export class GameManager {
     this.game.lobbyGroupId = group.id;
     this.game.originalGroupId = originalGroupId;
     this.game.startTime = Date.now();
-    this.game.joinDeadline = Date.now() + 2 * 60 * 1000; // 2 minutes
+    this.game.joinDeadline = Date.now() + JOIN_WINDOW_DURATION_MS;
 
     return group.id;
   }
@@ -94,12 +104,12 @@ export class GameManager {
       return { success: false }; // Join window closed
     }
 
-    // If lobby is full (6 players), remove the last player
+    // If lobby is full, remove the last player
     // IMPORTANT: Never remove the agent from the group
     let removedPlayer: Player | undefined;
     const agentInboxId = this.agent.client.inboxId;
     
-    if (this.game.players.size >= 6) {
+    if (this.game.players.size >= MAX_PLAYERS) {
       // Get the last player (most recently added) from the Map
       // Since Maps maintain insertion order, we can get the last entry
       // Skip the agent if it's the last entry (shouldn't happen, but safety check)
@@ -174,7 +184,7 @@ export class GameManager {
     return (
       this.game.state === GameState.WAITING_FOR_PLAYERS &&
       (deadlinePassed || isFull) &&
-      this.game.players.size >= 2 // Minimum 2 players
+      this.game.players.size >= MIN_PLAYERS_TO_START
     );
   }
 
@@ -213,20 +223,20 @@ export class GameManager {
         if (player.role === Role.IMPOSTOR) {
           await dm.send(
             `[Private Message]\n\n` +
-            `You are the 🔥 IMPOSTOR.\n\n` +
+            `You are the 🔥 MAFIA.\n\n` +
             `You can attempt kills using:\n` +
-            `@AgentName kill <username>\n\n` +
+            `@mafia kill <username>\n\n` +
             `Success chance: 50%\n` +
-            `Max attempts per round: 3\n` +
-            `Cooldown: 15 seconds per attempt`
+            `Max attempts per round: ${MAX_KILL_ATTEMPTS}\n` +
+            `Cooldown: ${KILL_COOLDOWN_SECONDS} seconds per attempt`
           );
         } else {
           await dm.send(
             `[Private Message]\n\n` +
-            `You are a ✅ CREWMATE.\n\n` +
+            `You are a ✅ TOWN MEMBER.\n\n` +
             `Complete tasks using:\n` +
-            `@AgentName /task <value>\n\n` +
-            `Your goal is to identify and vote out the impostor!`
+            `@mafia /task <value>\n\n` +
+            `Your goal is to identify and vote out the mafia!`
           );
         }
       } catch (error) {
@@ -236,8 +246,8 @@ export class GameManager {
   }
 
   async startRound(round: number): Promise<void> {
-    if (round < 1 || round > 3) {
-      throw new Error("Invalid round number");
+    if (round < 1 || round > MAX_ROUNDS) {
+      throw new Error(`Invalid round number. Must be between 1 and ${MAX_ROUNDS}`);
     }
 
     this.game.round = round;
@@ -327,7 +337,7 @@ export class GameManager {
     if (!impostor || !impostor.isAlive || impostor.role !== Role.IMPOSTOR) {
       return {
         success: false,
-        message: "Only the impostor can attempt kills.",
+        message: "Only the mafia can attempt kills.",
       };
     }
 
@@ -403,7 +413,7 @@ export class GameManager {
       const attemptsLeft = this.game.maxKillAttempts - impostor.killAttempts;
       return {
         success: false,
-        message: `Kill FAILED (50% chance).\n\nCooldown: 15 seconds.\nAttempts left: ${attemptsLeft}.`,
+        message: `Kill FAILED (${(KILL_SUCCESS_CHANCE * 100).toFixed(0)}% chance).\n\nCooldown: ${KILL_COOLDOWN_SECONDS} seconds.\nAttempts left: ${attemptsLeft}.`,
       };
     }
   }
@@ -477,7 +487,7 @@ export class GameManager {
       return { gameEnded: true, winner: "CREW" };
     }
 
-    if (this.game.round === 3) {
+    if (this.game.round === MAX_ROUNDS) {
       // Check if we just finished round 3 voting
       const isAfterRound3Voting =
         this.game.state === GameState.ROUND_3_VOTING ||
@@ -541,9 +551,9 @@ export class GameManager {
       currentPhaseDeadline: null,
       impostorInboxId: null,
       eliminatedPlayers: new Set(),
-      killCooldown: 15 * 1000,
-      killSuccessChance: 0.5,
-      maxKillAttempts: 3,
+      killCooldown: KILL_COOLDOWN_MS,
+      killSuccessChance: KILL_SUCCESS_CHANCE,
+      maxKillAttempts: MAX_KILL_ATTEMPTS,
       taskAssignments: new Map(),
     };
   }
