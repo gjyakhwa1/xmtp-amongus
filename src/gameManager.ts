@@ -19,6 +19,7 @@ import {
   MAX_KILL_ATTEMPTS,
   JOIN_WINDOW_DURATION_MS,
   KILL_COOLDOWN_SECONDS,
+  TASKS_PER_PLAYER,
 } from "./config/gameConfig.js";
 
 export class GameManager {
@@ -42,6 +43,7 @@ export class GameManager {
       killSuccessChance: KILL_SUCCESS_CHANCE,
       maxKillAttempts: MAX_KILL_ATTEMPTS,
       taskAssignments: new Map(),
+      currentTaskIndex: new Map(),
     };
   }
 
@@ -224,9 +226,14 @@ export class GameManager {
           await dm.send(
             `[Private Message]\n\n` +
             `You are the 🔥 MAFIA.\n\n` +
-            `You can attempt kills using:\n` +
-            `@mafia kill <username>\n\n` +
-            `Success chance: 50%\n` +
+            `You must fake complete tasks while also attempting kills.\n` +
+            `Task and Kill phases run simultaneously.\n\n` +
+            `To fake complete tasks:\n` +
+            `@mafia /task <answer> (in group chat)\n` +
+            `You need to guess the correct answer to fake complete the task.\n\n` +
+            `To attempt kills:\n` +
+            `kill <address> or kill <username> (in DM)\n\n` +
+            `Success chance: ${(KILL_SUCCESS_CHANCE * 100).toFixed(0)}%\n` +
             `Max attempts per round: ${MAX_KILL_ATTEMPTS}\n` +
             `Cooldown: ${KILL_COOLDOWN_SECONDS} seconds per attempt`
           );
@@ -261,10 +268,14 @@ export class GameManager {
         player.voted = false;
         player.voteTarget = null;
         
-        // Assign tasks to all players (including mafia)
-        // Mafia gets a fake task that they can't complete, but it looks the same
-        const task = generateTask();
-        this.game.taskAssignments.set(player.inboxId, task);
+        // Assign multiple tasks to all players (including mafia)
+        // Mafia gets fake tasks that they can fake complete
+        const tasks: Task[] = [];
+        for (let i = 0; i < TASKS_PER_PLAYER; i++) {
+          tasks.push(generateTask());
+        }
+        this.game.taskAssignments.set(player.inboxId, tasks);
+        this.game.currentTaskIndex.set(player.inboxId, 0);
       }
     }
   }
@@ -273,22 +284,23 @@ export class GameManager {
     round: number,
     phase: "TASKS" | "KILL" | "DISCUSSION" | "VOTING"
   ): GameState {
+    // TASKS phase now represents the combined Task & Kill phase
     const stateMap: Record<number, Record<string, GameState>> = {
       1: {
         TASKS: GameState.ROUND_1_TASKS,
-        KILL: GameState.ROUND_1_KILL,
+        KILL: GameState.ROUND_1_TASKS, // Combined with TASKS
         DISCUSSION: GameState.ROUND_1_DISCUSSION,
         VOTING: GameState.ROUND_1_VOTING,
       },
       2: {
         TASKS: GameState.ROUND_2_TASKS,
-        KILL: GameState.ROUND_2_KILL,
+        KILL: GameState.ROUND_2_TASKS, // Combined with TASKS
         DISCUSSION: GameState.ROUND_2_DISCUSSION,
         VOTING: GameState.ROUND_2_VOTING,
       },
       3: {
         TASKS: GameState.ROUND_3_TASKS,
-        KILL: GameState.ROUND_3_KILL,
+        KILL: GameState.ROUND_3_TASKS, // Combined with TASKS
         DISCUSSION: GameState.ROUND_3_DISCUSSION,
         VOTING: GameState.ROUND_3_VOTING,
       },
@@ -303,11 +315,6 @@ export class GameManager {
       return false;
     }
 
-    // Mafia cannot complete tasks (they get fake tasks but can't actually complete them)
-    if (player.role === Role.IMPOSTOR) {
-      return false;
-    }
-
     // Check if we're in a task phase
     const isTaskPhase =
       this.game.state === GameState.ROUND_1_TASKS ||
@@ -318,7 +325,15 @@ export class GameManager {
       return false;
     }
 
-    const task = this.game.taskAssignments.get(inboxId);
+    const tasks = this.game.taskAssignments.get(inboxId);
+    if (!tasks || tasks.length === 0) {
+      return false;
+    }
+
+    // Get current task index
+    const currentIndex = this.game.currentTaskIndex.get(inboxId) || 0;
+    const task = tasks[currentIndex];
+    
     if (!task || task.completed) {
       return false;
     }
@@ -326,9 +341,18 @@ export class GameManager {
     // Trim and normalize the answer before validation
     const normalizedAnswer = answer.trim();
     const isCorrect = validateTaskAnswer(task, normalizedAnswer);
+    
+    // Mafia can complete tasks if they guess correctly (fake task completion)
+    // Town members must complete their real tasks
     if (isCorrect) {
       task.completed = true;
       player.completedTasks++;
+      
+      // Move to next task if there are more
+      if (currentIndex < tasks.length - 1) {
+        this.game.currentTaskIndex.set(inboxId, currentIndex + 1);
+      }
+      
       return true;
     }
 
@@ -347,13 +371,13 @@ export class GameManager {
       };
     }
 
-    // Check if we're in a kill phase
-    const isKillPhase =
-      this.game.state === GameState.ROUND_1_KILL ||
-      this.game.state === GameState.ROUND_2_KILL ||
-      this.game.state === GameState.ROUND_3_KILL;
+    // Check if we're in a task phase (kill phase runs simultaneously with task phase)
+    const isTaskPhase =
+      this.game.state === GameState.ROUND_1_TASKS ||
+      this.game.state === GameState.ROUND_2_TASKS ||
+      this.game.state === GameState.ROUND_3_TASKS;
 
-    if (!isKillPhase) {
+    if (!isTaskPhase) {
       return {
         success: false,
         message: "It's not the kill phase yet.",
@@ -480,8 +504,8 @@ export class GameManager {
       (p) => p.username.toLowerCase() === targetUsername.toLowerCase()
     );
 
-    if (!target) {
-      return false;
+    if (!target || !target.isAlive) {
+      return false; // Target doesn't exist or is already eliminated
     }
 
     voter.voted = true;
@@ -543,15 +567,16 @@ export class GameManager {
   async advancePhase(): Promise<void> {
     const state = this.game.state;
 
-    // Task phases -> Kill phases
+    // Task & Kill phases (combined) -> Discussion phases
+    // Skip the separate KILL phase since it's now combined with TASKS
     if (state === GameState.ROUND_1_TASKS) {
-      this.game.state = GameState.ROUND_1_KILL;
+      this.game.state = GameState.ROUND_1_DISCUSSION;
     } else if (state === GameState.ROUND_2_TASKS) {
-      this.game.state = GameState.ROUND_2_KILL;
+      this.game.state = GameState.ROUND_2_DISCUSSION;
     } else if (state === GameState.ROUND_3_TASKS) {
-      this.game.state = GameState.ROUND_3_KILL;
+      this.game.state = GameState.ROUND_3_DISCUSSION;
     }
-    // Kill phases -> Discussion phases
+    // Legacy: Kill phases -> Discussion phases (for backwards compatibility)
     else if (state === GameState.ROUND_1_KILL) {
       this.game.state = GameState.ROUND_1_DISCUSSION;
     } else if (state === GameState.ROUND_2_KILL) {
@@ -593,6 +618,7 @@ export class GameManager {
       killSuccessChance: KILL_SUCCESS_CHANCE,
       maxKillAttempts: MAX_KILL_ATTEMPTS,
       taskAssignments: new Map(),
+      currentTaskIndex: new Map(),
     };
   }
 
@@ -606,8 +632,24 @@ export class GameManager {
     return this.getAlivePlayers().map((p) => p.username);
   }
 
-  getTaskForPlayer(inboxId: string): Task | undefined {
-    return this.game.taskAssignments.get(inboxId);
+  getTaskForPlayer(inboxId: string, taskIndex?: number): Task | undefined {
+    const tasks = this.game.taskAssignments.get(inboxId);
+    if (!tasks || tasks.length === 0) {
+      return undefined;
+    }
+    
+    // If taskIndex is provided, return that specific task
+    if (taskIndex !== undefined) {
+      return tasks[taskIndex];
+    }
+    
+    // Otherwise, return the current task
+    const currentIndex = this.game.currentTaskIndex.get(inboxId) || 0;
+    return tasks[currentIndex];
+  }
+  
+  getAllTasksForPlayer(inboxId: string): Task[] {
+    return this.game.taskAssignments.get(inboxId) || [];
   }
 }
 

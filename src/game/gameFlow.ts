@@ -5,7 +5,7 @@ import {
   type ActionsContent,
 } from "../xmtp-inline-actions/types/index.js";
 import { setPhaseTimer, clearPhaseTimer } from "../utils/timers.js";
-import { GameState } from "../types.js";
+import { GameState, type Player } from "../types.js";
 import {
   TASK_PHASE_DURATION_MS,
   KILL_PHASE_DURATION_MS,
@@ -18,6 +18,8 @@ import {
   CANCEL_GAME_WINDOW_MS,
   DISCUSSION_PHASE_DURATION_SECONDS,
   KILL_PHASE_DURATION_SECONDS,
+  TASKS_PER_PLAYER,
+  TASK_DISPATCH_BUFFER_MS,
 } from "../config/gameConfig.js";
 import { getPlayerAddress, formatAddressForMention } from "../utils/playerAddress.js";
 import { sendKillButtons } from "../utils/killButtons.js";
@@ -73,7 +75,8 @@ export async function startGame(agent: Agent, gameManager: GameManager) {
 
         // Start round 1
         await gameManager.startRound(1);
-        await startTaskPhase(1, agent, gameManager);
+        // Start combined task and kill phase
+        await startTaskAndKillPhase(1, agent, gameManager);
       }
     }
   } catch (error) {
@@ -81,7 +84,7 @@ export async function startGame(agent: Agent, gameManager: GameManager) {
   }
 }
 
-export async function startTaskPhase(
+export async function startTaskAndKillPhase(
   round: number,
   agent: Agent,
   gameManager: GameManager
@@ -92,16 +95,35 @@ export async function startTaskPhase(
   const group = await agent.client.conversations.getConversationById(lobbyId);
   if (!group) return;
 
+  // Announce combined phase
   await group.send(
-    `🛠️ Round ${round} — Task Phase\n\nComplete your assigned task by mentioning @mafia with your answer: @mafia /task <value>`
+    `🛠️🔪 Round ${round} — Task & Kill Phase\n\n` +
+    `Complete your assigned task by mentioning @mafia with your answer: @mafia /task <value>\n` +
+    `Phase duration: ${Math.max(TASK_PHASE_DURATION_MS, KILL_PHASE_DURATION_MS) / 1000} seconds.`
   );
 
-  // Send individual tasks to all players in the group (including mafia)
-  // Tasks are sent one by one to the group with player address mentions
+  // Send tasks one by one to all players
+  // Each player gets TASKS_PER_PLAYER tasks
+  // All tasks must be sent 15 seconds before phase ends
   const players = gameManager.getAlivePlayers();
-  for (let i = 0; i < players.length; i++) {
-    const player = players[i];
-    const task = gameManager.getTaskForPlayer(player.inboxId);
+  const totalTasks = players.length * TASKS_PER_PLAYER;
+  const combinedPhaseDuration = Math.max(TASK_PHASE_DURATION_MS, KILL_PHASE_DURATION_MS);
+  const availableTime = combinedPhaseDuration - TASK_DISPATCH_BUFFER_MS;
+  const intervalBetweenTasks = Math.floor(availableTime / totalTasks);
+  
+  // Create a flat list of all tasks to send
+  const taskQueue: Array<{ player: Player; taskIndex: number }> = [];
+  for (const player of players) {
+    for (let taskIndex = 0; taskIndex < TASKS_PER_PLAYER; taskIndex++) {
+      taskQueue.push({ player, taskIndex });
+    }
+  }
+  
+  // Send tasks one by one with calculated intervals
+  for (let i = 0; i < taskQueue.length; i++) {
+    const { player, taskIndex } = taskQueue[i];
+    const task = gameManager.getTaskForPlayer(player.inboxId, taskIndex);
+    
     if (task) {
       try {
         // Get player address for mention
@@ -111,95 +133,68 @@ export async function startTaskPhase(
           : `@${player.username}`;
 
         // Send task to group with player mention
-        // Mafia also gets a task (but it's fake - they can't complete it)
-        // Don't reveal who is mafia
+        // Mafia also gets tasks that they can fake complete
         await group.send(
-          `${addressMention}\n\n🛠️ Your Task:\n\n${task.question}\n\nSubmit your answer: @mafia /task <answer>`
+          `${addressMention}\n\n🛠️ Task ${taskIndex + 1}/${TASKS_PER_PLAYER}:\n\n${task.question}\n\nSubmit your answer: @mafia /task <answer>`
         );
-
-        // Add a small delay between task messages (1 second)
-        if (i < players.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
       } catch (error) {
         console.error(`Failed to send task to ${player.username}:`, error);
         // Fallback: send without address mention
         try {
           await group.send(
-            `@${player.username}\n\n🛠️ Your Task:\n\n${task.question}\n\nSubmit your answer: @mafia /task <answer>`
+            `@${player.username}\n\n🛠️ Task ${taskIndex + 1}/${TASKS_PER_PLAYER}:\n\n${task.question}\n\nSubmit your answer: @mafia /task <answer>`
           );
-          // Add delay even for fallback
-          if (i < players.length - 1) {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
         } catch (fallbackError) {
           console.error(`Failed to send fallback task message:`, fallbackError);
         }
       }
     }
-  }
-
-  // After task phase duration, move to kill phase
-  setPhaseTimer(`taskPhase-${round}`, TASK_PHASE_DURATION_MS, async () => {
-    await gameManager.advancePhase();
-    await startKillPhase(round, agent, gameManager);
-  }, gameManager);
-}
-
-export async function startKillPhase(
-  round: number,
-  agent: Agent,
-  gameManager: GameManager
-) {
-  const impostorInboxId = gameManager.getGame().impostorInboxId;
-  if (!impostorInboxId) return;
-
-  const impostor = gameManager.getPlayer(impostorInboxId);
-  if (!impostor || !impostor.isAlive) return;
-
-  const lobbyId = gameManager.getGame().lobbyGroupId;
-  const group = lobbyId
-    ? await agent.client.conversations.getConversationById(lobbyId)
-    : null;
-
-  // Announce kill phase to group
-  if (group) {
-    await group.send(
-      `🔪 Round ${round} — Kill Phase\n\n` +
-        `Kill phase duration: ${KILL_PHASE_DURATION_SECONDS} seconds.\n` +
-        `The phase will automatically advance after the time limit.`
-    );
-  }
-
-  try {
-    const dm = await agent.client.conversations.newDm(impostorInboxId);
     
-    // Send kill instructions
-    await dm.send(
-      `Round ${round} Kill Phase.\n\n` +
-        `Success chance: ${(KILL_SUCCESS_CHANCE * 100).toFixed(0)}%\n` +
-        `Max attempts: ${MAX_KILL_ATTEMPTS}\n` +
-        `Cooldown: ${KILL_COOLDOWN_SECONDS} seconds per attempt\n` +
-        `Phase duration: ${KILL_PHASE_DURATION_SECONDS} seconds\n\n` +
-        `Select a target using the buttons below:`
-    );
-
-    // Send kill buttons
-    await sendKillButtons(agent, dm, gameManager, round, impostorInboxId);
-  } catch (error) {
-    console.error("Failed to send kill phase DM:", error);
+    // Wait for the calculated interval before sending next task
+    // Don't wait after the last task
+    if (i < taskQueue.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, intervalBetweenTasks));
+    }
   }
 
-  // Set timer to automatically advance to discussion phase after kill phase duration
-  setPhaseTimer(`killPhase-${round}`, KILL_PHASE_DURATION_MS, async () => {
-    // Only advance if we're still in kill phase (not already advanced by successful kill)
-    const currentState = gameManager.getState();
-    const isKillPhase =
-      currentState === GameState.ROUND_1_KILL ||
-      currentState === GameState.ROUND_2_KILL ||
-      currentState === GameState.ROUND_3_KILL;
+  // Send kill instructions to mafia via DM
+  const impostorInboxId = gameManager.getGame().impostorInboxId;
+  if (impostorInboxId) {
+    const impostor = gameManager.getPlayer(impostorInboxId);
+    if (impostor && impostor.isAlive) {
+      try {
+        const dm = await agent.client.conversations.newDm(impostorInboxId);
+        
+        // Send kill instructions
+        await dm.send(
+          `Round ${round} — Task & Kill Phase\n\n` +
+          `You must fake complete tasks while also attempting kills.\n\n` +
+          `Success chance: ${(KILL_SUCCESS_CHANCE * 100).toFixed(0)}%\n` +
+          `Max attempts: ${MAX_KILL_ATTEMPTS}\n` +
+          `Cooldown: ${KILL_COOLDOWN_SECONDS} seconds per attempt\n` +
+          `Phase duration: ${Math.max(TASK_PHASE_DURATION_MS, KILL_PHASE_DURATION_MS) / 1000} seconds\n\n` +
+          `Select a target using the buttons below:`
+        );
 
-    if (isKillPhase) {
+        // Send kill buttons
+        await sendKillButtons(agent, dm, gameManager, round, impostorInboxId);
+      } catch (error) {
+        console.error("Failed to send kill phase DM:", error);
+      }
+    }
+  }
+
+  // After combined phase duration, move to discussion phase
+  const phaseDuration = Math.max(TASK_PHASE_DURATION_MS, KILL_PHASE_DURATION_MS);
+  setPhaseTimer(`taskAndKillPhase-${round}`, phaseDuration, async () => {
+    // Only advance if we're still in task phase (not already advanced)
+    const currentState = gameManager.getState();
+    const isTaskPhase =
+      currentState === GameState.ROUND_1_TASKS ||
+      currentState === GameState.ROUND_2_TASKS ||
+      currentState === GameState.ROUND_3_TASKS;
+
+    if (isTaskPhase) {
       await gameManager.advancePhase();
       await startDiscussionPhase(round, agent, gameManager);
     }
@@ -302,16 +297,25 @@ export async function processVoting(
     }
   }
 
+  // Check win condition before advancing to next round
+  // If mafia was eliminated, game should have already ended
+  const winCheck = gameManager.checkWinCondition();
+  if (winCheck.gameEnded) {
+    await endGame(winCheck.winner, agent, gameManager);
+    return;
+  }
+
   // Advance to next round or end game
   if (round < MAX_ROUNDS) {
     await gameManager.advancePhase();
     const nextRound = round + 1;
     await gameManager.startRound(nextRound);
-    await startTaskPhase(nextRound, agent, gameManager);
+    // Start combined task and kill phase
+    await startTaskAndKillPhase(nextRound, agent, gameManager);
   } else {
     // Game end - mafia wins if still alive
-    const winCheck = gameManager.checkWinCondition();
-    await endGame(winCheck.winner || "IMPOSTOR", agent, gameManager);
+    const finalWinCheck = gameManager.checkWinCondition();
+    await endGame(finalWinCheck.winner || "IMPOSTOR", agent, gameManager);
   }
 }
 

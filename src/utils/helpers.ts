@@ -69,6 +69,22 @@ export function parseCommand(
   return null;
 }
 
+// Helper to format time remaining message
+export function formatTimeRemaining(deadline: number | null): string | null {
+  if (!deadline) return null;
+  
+  const now = Date.now();
+  const timeLeft = Math.max(0, deadline - now);
+  const minutesLeft = Math.floor(timeLeft / 60000);
+  const secondsLeft = Math.floor((timeLeft % 60000) / 1000);
+  
+  if (minutesLeft > 0) {
+    return `${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''} ${secondsLeft} second${secondsLeft !== 1 ? 's' : ''}`;
+  } else {
+    return `${secondsLeft} second${secondsLeft !== 1 ? 's' : ''}`;
+  }
+}
+
 // Helper to check if agent is a member of the group
 export async function isAgentInGroup(
   conversation: any,

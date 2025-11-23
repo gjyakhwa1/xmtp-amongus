@@ -98,6 +98,17 @@ export async function handleIntentMessage(
               `✅ You joined the game! Players: ${playerList} (${players.length}/${MAX_PLAYERS})`
             );
 
+            // Send time remaining message to lobby group
+            const { formatTimeRemaining } = await import("../utils/helpers.js");
+            const joinDeadline = gameManager.getGame().joinDeadline;
+            const timeMessage = formatTimeRemaining(joinDeadline);
+            if (timeMessage && lobbyGroup) {
+              await lobbyGroup.send(
+                `⏰ Time remaining to start: ${timeMessage}\n\n` +
+                `Players: ${playerList} (${players.length}/${MAX_PLAYERS})`
+              );
+            }
+
             // If lobby is full, start immediately
             if (players.length >= MAX_PLAYERS) {
               clearPhaseTimer("joinWindow", gameManager);

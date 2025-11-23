@@ -50,7 +50,8 @@ export interface Game {
   killCooldown: number; // milliseconds
   killSuccessChance: number; // 0-1
   maxKillAttempts: number;
-  taskAssignments: Map<string, Task>; // inboxId -> Task
+  taskAssignments: Map<string, Task[]>; // inboxId -> Task[] (multiple tasks per player)
+  currentTaskIndex: Map<string, number>; // inboxId -> current task index
 }
 
 export interface Task {

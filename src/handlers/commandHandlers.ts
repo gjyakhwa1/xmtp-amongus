@@ -13,7 +13,9 @@ import {
   MAX_PLAYERS,
   JOIN_WINDOW_DURATION_MS,
   JOIN_WINDOW_DURATION_SECONDS,
+  KILL_PHASE_DURATION_MS,
 } from "../config/gameConfig.js";
+import { ContentTypeActions, type ActionsContent } from "../xmtp-inline-actions/types/index.js";
 
 // Handle /start command
 export function setupStartHandler(agent: Agent, gameManager: GameManager) {
@@ -177,6 +179,17 @@ export function setupJoinHandler(agent: Agent, gameManager: GameManager) {
               `✅ You joined the game! Players: ${playerList} (${players.length}/${MAX_PLAYERS})`
             );
 
+            // Send time remaining message to lobby group
+            const { formatTimeRemaining } = await import("../utils/helpers.js");
+            const joinDeadline = gameManager.getGame().joinDeadline;
+            const timeMessage = formatTimeRemaining(joinDeadline);
+            if (timeMessage && lobbyGroup) {
+              await lobbyGroup.send(
+                `⏰ Time remaining to start: ${timeMessage}\n\n` +
+                `Players: ${playerList} (${players.length}/${MAX_PLAYERS})`
+              );
+            }
+
             // If lobby is full, start immediately
             if (players.length >= MAX_PLAYERS) {
               clearPhaseTimer("joinWindow", gameManager);
@@ -225,16 +238,8 @@ export function setupTaskHandler(gameManager: GameManager) {
         return;
       }
 
-      // Mafia can submit tasks but they don't actually complete
-      // Give them the same response as town to not reveal identity
-      if (player.role === "IMPOSTOR") {
-        // Mafia's task submission will always fail validation (handled in gameManager)
-        // But we give them a neutral response
-        await ctx.sendText("❌ Task answer incorrect. Try again.");
-        return;
-      }
-
-      // Crew members must complete real tasks
+      // All players (including mafia) can submit tasks
+      // Mafia needs to fake complete tasks by guessing the correct answer
       const completed = await gameManager.completeTask(
         ctx.message.senderInboxId,
         answer
@@ -269,8 +274,73 @@ export function setupKillHandler(agent: Agent, gameManager: GameManager) {
     }
 
     try {
+      // If no arguments, send kill buttons with all available targets
       if (!parsed.args || parsed.args.length === 0) {
-        await ctx.sendText("Usage: kill <address> or kill <username>");
+        const alivePlayers = gameManager.getAlivePlayers();
+        const mafiaInboxId = gameManager.getGame().impostorInboxId;
+        const killablePlayers = alivePlayers.filter(
+          (p) => p.inboxId !== mafiaInboxId
+        );
+
+        if (killablePlayers.length === 0) {
+          await ctx.sendText("❌ No players left to kill.");
+          return;
+        }
+
+        // Get the lobby group to resolve addresses
+        const lobbyId = gameManager.getGame().lobbyGroupId;
+        const lobbyGroup = lobbyId
+          ? await agent.client.conversations.getConversationById(lobbyId)
+          : null;
+
+        // Create kill buttons for each player
+        const { getPlayerAddress } = await import("../utils/playerAddress.js");
+
+        const killActions = await Promise.all(
+          killablePlayers.map(async (player) => {
+            // Try to get player address for display
+            const playerAddress = lobbyGroup
+              ? await getPlayerAddress(agent, player.inboxId, lobbyGroup)
+              : null;
+            const displayName = playerAddress
+              ? `${player.username} (${playerAddress.slice(0, 6)}...${playerAddress.slice(-4)})`
+              : player.username;
+
+            return {
+              id: `kill-${player.inboxId}`,
+              label: `🔪 ${displayName}`,
+              style: "danger" as const,
+            };
+          })
+        );
+
+        const actionsContent: ActionsContent = {
+          id: `kill-command-${Date.now()}`,
+          description: `🔪 Select a target to kill:\n\nClick a button below to attempt a kill.`,
+          actions: killActions,
+          expiresAt: new Date(Date.now() + KILL_PHASE_DURATION_MS).toISOString(),
+        };
+
+        // Send using underlying client
+        try {
+          const client = (agent as any).client;
+          if (client && client.conversations) {
+            const conv = await client.conversations.getConversationById(ctx.conversation.id);
+            if (conv) {
+              await conv.send(actionsContent, ContentTypeActions);
+              return;
+            }
+          }
+        } catch (error) {
+          console.error("Error sending kill buttons, falling back to text:", error);
+        }
+
+        // Fallback to text message if buttons fail
+        const targetList = killablePlayers.map((p) => p.username).join(", ");
+        await ctx.sendText(
+          `🔪 Available targets: ${targetList}\n\n` +
+          `Use: kill <username> or kill <address> or kill`
+        );
         return;
       }
 
@@ -300,10 +370,10 @@ export function setupKillHandler(agent: Agent, gameManager: GameManager) {
               return;
             }
 
-            // Clear the kill phase timer since we're advancing early
+            // Clear the combined phase timer since we're advancing early
             const { clearPhaseTimer } = await import("../utils/timers.js");
             const currentRound = gameManager.getGame().round;
-            clearPhaseTimer(`killPhase-${currentRound}`, gameManager);
+            clearPhaseTimer(`taskAndKillPhase-${currentRound}`, gameManager);
 
             // Advance to discussion phase after a short delay
             setTimeout(async () => {

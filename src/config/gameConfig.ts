@@ -9,15 +9,19 @@ export const MAX_ROUNDS = 1;
 export const MIN_PLAYERS_TO_START = 3;
 
 // Mafia Kill Configuration
-export const KILL_COOLDOWN_MS = 15 * 1000; // 15 seconds in milliseconds
+export const KILL_COOLDOWN_MS = 10 * 1000; // 10 seconds in milliseconds
 export const KILL_SUCCESS_CHANCE = 0.5; // 50% success rate (0-1)
 export const MAX_KILL_ATTEMPTS = 3; // Maximum kill attempts per round
 
 // Phase Duration Configuration (in milliseconds)
 export const TASK_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
 export const KILL_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
-export const DISCUSSION_PHASE_DURATION_MS = 45 * 1000; // 45 seconds
-export const VOTING_PHASE_DURATION_MS = 60 * 1000; // 60 seconds
+export const DISCUSSION_PHASE_DURATION_MS = 30 * 1000; // 30 seconds
+export const VOTING_PHASE_DURATION_MS = 30 * 1000; // 30 seconds
+
+// Task Configuration
+export const TASKS_PER_PLAYER = 2; // Number of tasks each player must complete
+export const TASK_DISPATCH_BUFFER_MS = 15 * 1000; // 15 seconds buffer before phase ends
 
 // Lobby Configuration
 export const JOIN_WINDOW_DURATION_MS = 1 * 60 * 1000; // 2 minutes
